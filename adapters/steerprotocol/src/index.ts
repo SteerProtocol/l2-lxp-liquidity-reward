@@ -1,5 +1,5 @@
 import { CHAINS, PROTOCOLS } from "./sdk/config";
-import {  checkMostRecentVaultPositionsInRange, getUserSharesByVaultAtTime, getVaultsCreatedBefore } from "./sdk/subgraphDetails";
+import {  checkMostRecentVaultPositionsInRange, getUnderlyingBalance, getUserSharesByVaultAtTime, getVaultsCreatedBefore } from "./sdk/subgraphDetails";
 (BigInt.prototype as any).toJSON = function () {
   return this.toString();
 };
@@ -28,7 +28,7 @@ type OutputDataSchemaRow = {
   token_address: string;
   token_balance: bigint;
   token_symbol: string; //token symbol should be empty string if it is not available
-  usd_price: number; //assign 0 if not available
+  usd_price?: number; //assign 0 if not available
 };
 
 interface BlockData {
@@ -58,22 +58,28 @@ export const getUserTVLByBlock  = async (blocks: BlockData) => {
       const tick = await getCurrentTickAtBlock(vault.pool, blocks.blockNumber)
       const wasInRange = await checkMostRecentVaultPositionsInRange(CHAINS.L2_CHAIN_ID, PROTOCOLS.STEER, vault.vault, blocks.blockTimestamp, tick)
       if (wasInRange) {
+
+        // get Vault holdings
+        const vaultHoldings = await getUnderlyingBalance(CHAINS.L2_CHAIN_ID, PROTOCOLS.STEER, vault.vault, blocks.blockTimestamp)
+        // not deposit
+        if (vaultHoldings[0] == 0n) continue
+
         const userHoldings = await getUserSharesByVaultAtTime(CHAINS.L2_CHAIN_ID, PROTOCOLS.STEER, vault.vault, blocks.blockTimestamp)
         if (Object.keys(userHoldings).length) {
           // fetch USD for LPT
-          let value = 0
-          const url = `https://api.steer.finance/pool/lp/value?chain=${CHAINS.L2_CHAIN_ID}&address=${vault.vault}`
-          try {
-            const res = await fetch(url);
-            if (!res.ok) {
-              throw new Error(`Steer pricing api error - Status: ${res.status}`);
-            }
-            const data = await res.json()
-            value =  data.pricePerLP
-          } catch (error) {
-            // fallback keep 0
-          }
-          if (!value) value = 0;
+          // let value = 0
+          // const url = `https://api.steer.finance/pool/lp/value?chain=${CHAINS.L2_CHAIN_ID}&address=${vault.vault}`
+          // try {
+          //   const res = await fetch(url);
+          //   if (!res.ok) {
+          //     throw new Error(`Steer pricing api error - Status: ${res.status}`);
+          //   }
+          //   const data = await res.json()
+          //   value =  data.pricePerLP
+          // } catch (error) {
+          //   // fallback keep 0
+          // }
+          // if (!value) value = 0;
 
           // format obj to add
           for (const sender in userHoldings) {
@@ -82,10 +88,19 @@ export const getUserTVLByBlock  = async (blocks: BlockData) => {
                 block_number: blocks.blockNumber,
                 timestamp: blocks.blockTimestamp,
                 user_address: sender.toLowerCase(),
-                token_address: vault.vault.toLowerCase(),
-                token_balance: userHoldings[sender],
-                token_symbol: '',
-                usd_price: value // Number(userHoldings[sender]) * value / 1e18
+                token_address: vault.token0.toLowerCase(),
+                token_balance: userHoldings[sender] * vaultHoldings[1] / vaultHoldings[0], // get user proportion of total vault holdings of each token
+                token_symbol: vault.token0Symbol,
+                usd_price: 0 // Number(userHoldings[sender]) * value / 1e18
+              })
+              csvRows.push({
+                block_number: blocks.blockNumber,
+                timestamp: blocks.blockTimestamp,
+                user_address: sender.toLowerCase(),
+                token_address: vault.token1.toLowerCase(),
+                token_balance: userHoldings[sender] * vaultHoldings[2] / vaultHoldings[0], // get user proportion of total vault holdings of each token
+                token_symbol: vault.token1Symbol,
+                usd_price: 0 // Number(userHoldings[sender]) * value / 1e18
               })
             }
           }
