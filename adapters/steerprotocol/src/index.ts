@@ -1,16 +1,14 @@
-import { CHAINS, PROTOCOLS, RPC_URLS } from "./sdk/config";
-import { Depositor, VaultPositions, checkMostRecentVaultPositionsInRange, getDepositors, getUserSharesByVaultAtTime, getVaultsCreatedBefore } from "./sdk/subgraphDetails";
+import { CHAINS, PROTOCOLS } from "./sdk/config";
+import {  checkMostRecentVaultPositionsInRange, getUserSharesByVaultAtTime, getVaultsCreatedBefore } from "./sdk/subgraphDetails";
 (BigInt.prototype as any).toJSON = function () {
   return this.toString();
 };
-import { ethers } from 'ethers';
-
+import csv from "csv-parser";
 import { write } from 'fast-csv';
 import fs from 'fs';
 import stream from 'stream';
 import { promisify } from 'util';
 import { getCurrentTickAtBlock } from "./sdk/chainReads";
-import Big from "big.js";
 
 
 
@@ -83,8 +81,8 @@ export const getUserTVLByBlock  = async (blocks: BlockData) => {
               csvRows.push({
                 block_number: blocks.blockNumber,
                 timestamp: blocks.blockTimestamp,
-                user_address: sender,
-                token_address: vault.vault,
+                user_address: sender.toLowerCase(),
+                token_address: vault.vault.toLowerCase(),
                 token_balance: userHoldings[sender],
                 token_symbol: '',
                 usd_price: value // Number(userHoldings[sender]) * value / 1e18
@@ -103,6 +101,56 @@ export const getUserTVLByBlock  = async (blocks: BlockData) => {
   // });
   return csvRows
 };
+
+const readBlocksFromCSV = async (filePath: string): Promise<BlockData[]> => {
+  const blocks: BlockData[] = [];
+
+  await new Promise<void>((resolve, reject) => {
+      fs.createReadStream(filePath)
+      .pipe(csv()) // Specify the separator as '\t' for TSV files
+      .on('data', (row) => {
+          const blockNumber = parseInt(row.number, 10);
+          const blockTimestamp = parseInt(row.timestamp, 10);
+          if (!isNaN(blockNumber) && blockTimestamp) {
+          blocks.push({ blockNumber: blockNumber, blockTimestamp });
+          }
+      })
+      .on('end', () => {
+          resolve();
+      })
+      .on('error', (err) => {
+          reject(err);
+      });
+  });
+
+  return blocks;
+  };
+
+  readBlocksFromCSV('hourly_blocks.csv').then(async (blocks: any[]) => {
+    console.log(blocks);
+    const allCsvRows: any[] = []; 
+
+    for (const block of blocks) {
+        try {
+            const result = await getUserTVLByBlock(block);
+            allCsvRows.push(...result);
+        } catch (error) {
+            console.error(`An error occurred for block ${block}:`, error);
+        }
+    }
+    await new Promise((resolve, reject) => {
+        const ws = fs.createWriteStream(`outputData.csv`, { flags: 'w' });
+        write(allCsvRows, { headers: true })
+            .pipe(ws)
+            .on("finish", () => {
+            console.log(`CSV file has been written.`);
+            resolve;
+            });
+    });
+
+    }).catch((err) => {
+    console.error('Error reading CSV file:', err);
+    });
 
 // getData().then(() => {
 //   console.log("Done");
